@@ -19,12 +19,7 @@ Cu.import("resource://gre/modules/AddonManager.jsm");
 function LOG(m) (m = addon.name + ' Message @ '
 	+ (new Date()).toISOString() + "\n> " + m,
 		dump(m + "\n"), Services.console.logStringMessage(m));
-
-let iBG =
-	'data:;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGXRFWHRTb2Z0d2F'+
-	'yZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAGlJREFUeNqc0cEJACEMRFFNARaw/RexFe1dG3AjCBJ'+
-	'JYDL/kNtjDqn9lRLUnlrixjd5qVdo6WNQOhiXN05Jg7PyYEJuzMmFaRn+GZG6KrQMlxHpY1A6GJc'+
-	'3TkmDs/JgQm7MyYVpqf0CDABVcj3T2ITzOAAAAABJRU5ErkJggg==';
+function rsc(n) 'resource://' + addon.tag + '/' + n;
 
 let i$ = {
 	onOpenWindow: function(aWindow) {
@@ -42,6 +37,22 @@ let i$ = {
 	onWindowTitleChange: function() {}
 };
 
+let showAlertNotification = Cc["@mozilla.org/alerts-service;1"].getService(Ci.nsIAlertsService);
+showAlertNotification = showAlertNotification.showAlertNotification.bind(showAlertNotification);
+
+function iNotify(aMsg, callback) {
+	let nme = addon.branch.getIntPref('nme');
+	
+	if(nme == 2) {
+		showAlertNotification(rsc("icon.png"),addon.name,aMsg,!1,"",
+			(s,t) => t == "alertshow" || callback(t));
+	} else {
+		if(nme) Services.prompt.alert(null,addon.name,aMsg);
+		
+		callback();
+	}
+}
+
 function onClickHanlder(ev) {
 	ev.preventDefault();
 	
@@ -51,10 +62,18 @@ function onClickHanlder(ev) {
 		return;
 	}
 	
-	this.style.setProperty('background','url('+iBG+') repeat','important');
 	this.setAttribute(addon.tag,1);
+	this.className += ' danger disabled';
+	let d = this.ownerDocument,
+		l = this.lastChild,
+		f = this.firstChild;
+	l.textContent = ' Installing...';
+	f.className = f.className.replace('plus','hourglass');
+	d.body.appendChild(d.createElement('style')).textContent = '@keyframes '
+		+addon.tag+'{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+	f.style.animation = addon.tag + ' 3s infinite linear';
 	
-	xhr(this.href || this.getAttribute(addon.tag),data => {
+	xhr(this.href || this.getAttribute('href'),data => {
 		let iStream = Cc["@mozilla.org/io/arraybuffer-input-stream;1"]
 			.createInstance(Ci.nsIArrayBufferInputStream);
 		
@@ -105,8 +124,18 @@ function onClickHanlder(ev) {
 				
 				AddonManager.getInstallForFile(oFile,aInstall => {
 					let done = (aMsg) => {
-						Services.prompt.alert(null,addon.name,aMsg);
-						oFile.remove(!1);
+						let c = 'check';
+						if(typeof aMsg === 'number') {
+							l.textContent = 'Error ' + aMsg;
+							aMsg = 'Installation failed ('+aMsg+')';
+							c = 'alert';
+						} else {
+							l.textContent = 'Succeed!';
+							this.className = this.className.replace('danger','');
+						}
+						f.style.animation = null;
+						f.className = f.className.replace('hourglass',c);
+						iNotify(aMsg, () => oFile.remove(!1));
 					};
 					
 					aInstall.addListener({
@@ -131,46 +160,37 @@ function onClickHanlder(ev) {
 	});
 }
 
-function addButton(doc,n,u) {
+function addButton(n,u) {
 	let p = n.parentNode;
 	n = n.cloneNode(!0);
 	
 	n.id = addon.tag;
 	n.title = 'Install Extension';
-	n.textContent = 'Add to ' + Services.appinfo.name;
-
-	let s = n.insertBefore(doc.createElement('span'), n.firstChild);
-	s.className = 'octicon octicon-plus';
+	n.textContent = ' Add to ' + Services.appinfo.name;
+	n.insertBefore(n.ownerDocument.createElement('span'),
+		n.firstChild).className = 'octicon octicon-plus';
 	p.appendChild(n);
 	
 	n.addEventListener('click', onClickHanlder, false);
 	
 	if(u) {
-		n.setAttribute(addon.tag,u);
+		n.setAttribute('href',u);
 		n.style.cursor = 'pointer';
+		n.style.setProperty('box-shadow','none','important');
+		n.className += ' button primary pseudo-class-active';
 	}
 }
 
 function onPageLoad(doc) {
 	if(doc.getElementById(addon.tag)) return;
 	
-	if([].some.call(doc.querySelectorAll('table.files > tbody > tr > td.content'),
-		(n) => 'install.rdf' === n.textContent.trim())) {
-		
-		let c = 7, n;
-		while(c-- && !(n=doc.querySelector('a.minibutton:nth-child('+c+')')));
-		
-		if(n && n.textContent.trim() === 'Download ZIP') {
-			
-			addButton(doc,n);
-		}
-	}
-	
 	if(doc.location.pathname.replace(/\/[^/]+$/,'').substr(-4) === 'pull') {
 		// Based on work by Jerone: https://github.com/jerone/UserScripts
 		
-		let r = doc.location.pathname.split('/').filter(String).shift();
-		if(~(addon.branch.getPrefType('prs') && addon.branch.getCharPref('prs') || '').split(',').indexOf(r)) {
+		let r = '' + doc.location.pathname.split('/').filter(String).slice(1,2),
+			v = addon.branch.getPrefType('prs') && addon.branch.getCharPref('prs') || '';
+		
+		if(~v.toLowerCase().split(',').indexOf(r.toLowerCase())) {
 			
 			let n = doc.querySelectorAll('span.commit-ref.current-branch.css-truncate.js-selectable-text.expandable')[1],
 				b = n.textContent.trim().split(':'),
@@ -181,7 +201,18 @@ function onPageLoad(doc) {
 					'archive', b.join(':') + '.zip'
 				].join('/');
 			
-			addButton(doc,n,u);
+			addButton(n,u);
+		}
+	}
+	else if([].some.call(doc.querySelectorAll('table.files > tbody > tr > td.content'),
+		(n) => 'install.rdf' === n.textContent.trim())) {
+		
+		let c = 7, n;
+		while(c-- && !(n=doc.querySelector('a.minibutton:nth-child('+c+')')));
+		
+		if(n && n.textContent.trim() === 'Download ZIP') {
+			
+			addButton(n);
 		}
 	}
 }
@@ -196,7 +227,7 @@ function loadIntoWindow(window) {
 			if('class' == m.attributeName) {
 				if(~m.oldValue.indexOf('loading')
 				|| m.oldValue === 'context-loader') {
-					window.setTimeout(onPageLoad.bind(null,doc),620);
+					window.setTimeout(onPageLoad.bind(null,doc),820);
 				}
 				break;
 			}
@@ -300,9 +331,18 @@ function startup(data) {
 		};
 		addon.branch = Services.prefs.getBranch('extensions.'+addon.tag+'.');
 		
+		let io = Services.io;
+		io.getProtocolHandler("resource")
+			.QueryInterface(Ci.nsIResProtocolHandler)
+			.setSubstitution(addon.tag,
+				io.newURI(__SCRIPT_URI_SPEC__+'/../',null,null));
+		
 		i$.wmf(loadIntoWindowStub);
 		Services.wm.addListener(i$);
 		
+		if(!addon.branch.getPrefType('nme')) {
+			addon.branch.setIntPref('nme',2);
+		}
 		addon.branch.setCharPref('version', addon.version);
 	});
 }
@@ -313,6 +353,10 @@ function shutdown(data, reason) {
 	
 	Services.wm.removeListener(i$);
 	i$.wmf(unloadFromWindow);
+	
+	Services.io.getProtocolHandler("resource")
+		.QueryInterface(Ci.nsIResProtocolHandler)
+		.setSubstitution(addon.tag,null);
 }
 
 function install(data, reason) {}
